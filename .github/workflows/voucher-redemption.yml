@@ -1,0 +1,58 @@
+# .github/workflows/voucher-redemption.yml
+name: Voucher Redemption Pipeline
+
+on:
+  workflow_dispatch: # Manual trigger
+  repository_dispatch:
+    types: [stripe-voucher-redeemed]  # Triggered via Stripe webhook proxy
+  push:
+    branches: [main]
+    paths:
+      - 'vouchers/**'
+      - 'ledger/**'
+
+jobs:
+  redeem-voucher:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Load Stripe event
+        id: stripe
+        run: |
+          echo "::set-output name=voucher_id::$(jq -r .client_reference_id < stripe-event.json)"
+          echo "::set-output name=amount::$(jq -r .amount_total < stripe-event.json)"
+        env:
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+
+      - name: Validate voucher
+        run: |
+          node scripts/validateVoucher.js ${{ steps.stripe.outputs.voucher_id }}
+
+      - name: Log redemption to voucher ledger
+        run: |
+          echo "- Voucher: ${{ steps.stripe.outputs.voucher_id }}, Amount: ${{ steps.stripe.outputs.amount }}, Redeemed At: $(date)" >> ledger/redemptions.md
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add ledger/redemptions.md
+          git commit -m "Logged voucher redemption ${{ steps.stripe.outputs.voucher_id }}"
+          git push
+
+      - name: Notify USPS API (optional future step)
+        if: always()
+        run: curl -X POST https://your-api/notify-usps \
+              -d "voucher_id=${{ steps.stripe.outputs.voucher_id }}" \
+              -d "amount=${{ steps.stripe.outputs.amount }}"
